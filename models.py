@@ -28,6 +28,7 @@ from __future__ import print_function
 
 import math
 
+
 import tensorflow as tf
 import tensorflow.contrib.slim as slim
 from tensorflow.contrib.layers.python.layers import layers
@@ -140,6 +141,9 @@ def create_model(fingerprint_input, model_settings, model_architecture,
                                is_training)
   elif model_architecture == 'ds_cnn':
     return create_ds_cnn_model(fingerprint_input, model_settings, 
+                                 model_size_info, is_training)
+  elif model_architecture == 'attention':
+    return create_attention_model(fingerprint_input, model_settings,
                                  model_size_info, is_training)
   else:
     raise Exception('model_architecture argument "' + model_architecture +
@@ -1181,4 +1185,56 @@ def create_ds_cnn_model(fingerprint_input, model_settings, model_size_info,
     return logits, dropout_prob
   else:
     return logits
+
+def create_attention_model(fingerprint_input, model_settings, model_size_info, 
+                        is_training):
+  """Builds a model with a lstm+attention layer (with output projection layer and 
+       peep-hole connections)
+  Based on model described in https://arxiv.org/abs/1803.10916
+  model_size_info: [projection size, memory cells in LSTM, attention size]
+  """
+  if is_training:
+    dropout_prob = tf.placeholder(tf.float32, name='dropout_prob')
+  input_frequency_size = model_settings['dct_coefficient_count']
+  input_time_size = model_settings['spectrogram_length']
+  fingerprint_4d = tf.reshape(fingerprint_input,
+                              [-1, input_time_size, input_frequency_size])
+
+  num_classes = model_settings['label_count']
+  projection_units = model_size_info[0]
+  LSTM_units = model_size_info[1]
+  with tf.name_scope('LSTM-Layer'):
+    with tf.variable_scope("lstm"): 
+      lstmcell = tf.contrib.rnn.LSTMCell(LSTM_units, use_peepholes=True, 
+                   num_proj=projection_units)
+      outputs, _ = tf.nn.dynamic_rnn(cell=lstmcell, inputs=fingerprint_4d, 
+                  dtype=tf.float32)
+      # [B, T, D]
+      flow = outputs 
+
+  attention_units = model_size_info[2]
+  with tf.name_scope('Attention'):
+      W_e = tf.get_variable('W_e', shape=[projection_units, attention_units],
+             initializer=tf.contrib.layers.xavier_initializer()) 
+      b_e = tf.get_variable('b_e', shape=[attention_units])
+      v_e = tf.get_variable('v_e', shape=[attention_units])
+      # [B, T]
+      e = tf.reduce_sum(v_e * tf.tanh(tf.tensordot(flow, W_e, axes=(-1, 0)) + b_e), [2])
+      # [B, T]
+      a = tf.nn.softmax(e)
+      # [B, D]
+      c = tf.reduce_sum(tf.expand_dims(a,-1) * flow, [1])
+      flow = c
+      
+  with tf.name_scope('Output-Layer'):
+    W_o = tf.get_variable('W_o', shape=[projection_units, num_classes], 
+            initializer=tf.contrib.layers.xavier_initializer())
+    b_o = tf.get_variable('b_o', shape=[num_classes])
+    logits = tf.matmul(flow, W_o) + b_o
+
+  if is_training:
+    return logits, dropout_prob
+  else:
+    return logits
+
 
