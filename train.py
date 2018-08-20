@@ -110,8 +110,8 @@ def main(_):
       FLAGS.unknown_percentage,
       FLAGS.wanted_words.split(','), FLAGS.validation_percentage,
       FLAGS.testing_percentage, model_settings)
-  fingerprint_size = model_settings['fingerprint_size']
-  label_count = model_settings['label_count']
+  fingerprint_size = model_settings['fingerprint_size'] # nfreams*nfeat
+  label_count = model_settings['label_count'] # nclasses
   time_shift_samples = int((FLAGS.time_shift_ms * FLAGS.sample_rate) / 1000)
   # Figure out the learning rates for each training phase. Since it's often
   # effective to have high learning rates at the start of training, followed by
@@ -127,7 +127,7 @@ def main(_):
         '--how_many_training_steps and --learning_rate must be equal length '
         'lists, but are %d and %d long instead' % (len(training_steps_list),
                                                    len(learning_rates_list)))
-
+  # features
   fingerprint_input = tf.placeholder(
       tf.float32, [None, fingerprint_size], name='fingerprint_input')
 

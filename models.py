@@ -55,24 +55,24 @@ def prepare_model_settings(label_count, sample_rate, clip_duration_ms,
   Returns:
     Dictionary containing common settings.
   """
-  desired_samples = int(sample_rate * clip_duration_ms / 1000)
-  window_size_samples = int(sample_rate * window_size_ms / 1000)
-  window_stride_samples = int(sample_rate * window_stride_ms / 1000)
+  desired_samples = int(sample_rate * clip_duration_ms / 1000) # audio_samples
+  window_size_samples = int(sample_rate * window_size_ms / 1000) # window samples
+  window_stride_samples = int(sample_rate * window_stride_ms / 1000) # window stride samples
   length_minus_window = (desired_samples - window_size_samples)
   if length_minus_window < 0:
     spectrogram_length = 0
   else:
-    spectrogram_length = 1 + int(length_minus_window / window_stride_samples)
-  fingerprint_size = dct_coefficient_count * spectrogram_length
+    spectrogram_length = 1 + int(length_minus_window / window_stride_samples) # nframes
+  fingerprint_size = dct_coefficient_count * spectrogram_length # nframes * feat_dim
   return {
-      'desired_samples': desired_samples,
-      'window_size_samples': window_size_samples,
-      'window_stride_samples': window_stride_samples,
-      'spectrogram_length': spectrogram_length,
-      'dct_coefficient_count': dct_coefficient_count,
-      'fingerprint_size': fingerprint_size,
-      'label_count': label_count,
-      'sample_rate': sample_rate,
+      'desired_samples': desired_samples, # audio clip samples
+      'window_size_samples': window_size_samples, # window samples
+      'window_stride_samples': window_stride_samples, # window stride samples
+      'spectrogram_length': spectrogram_length, # nframes
+      'dct_coefficient_count': dct_coefficient_count, # feat_dim
+      'fingerprint_size': fingerprint_size, # nframes * feat_dim
+      'label_count': label_count, # num_classes 
+      'sample_rate': sample_rate, # smapling rate
   }
 
 
@@ -144,6 +144,9 @@ def create_model(fingerprint_input, model_settings, model_architecture,
                                  model_size_info, is_training)
   elif model_architecture == 'attention':
     return create_attention_model(fingerprint_input, model_settings,
+                                 model_size_info, is_training)
+  elif model_architecture == 'rmn': # residual memory neural network
+    return create_rmn_model(fingerprint_input, model_settings,
                                  model_size_info, is_training)
   else:
     raise Exception('model_architecture argument "' + model_architecture +
@@ -255,8 +258,10 @@ def create_conv_model(fingerprint_input, model_settings, is_training):
     dropout_prob = tf.placeholder(tf.float32, name='dropout_prob')
   input_frequency_size = model_settings['dct_coefficient_count']
   input_time_size = model_settings['spectrogram_length']
-  fingerprint_4d = tf.reshape(fingerprint_input,
+  # shape: [ batch_size, nframes, feat_dim, channels]
+  fingerprint_4d = tf.reshape(fingerprint_input, 
                               [-1, input_time_size, input_frequency_size, 1])
+  # conv 1
   first_filter_width = 8
   first_filter_height = 20
   first_filter_count = 64
@@ -272,7 +277,9 @@ def create_conv_model(fingerprint_input, model_settings, is_training):
     first_dropout = tf.nn.dropout(first_relu, dropout_prob)
   else:
     first_dropout = first_relu
+  # max pooling
   max_pool = tf.nn.max_pool(first_dropout, [1, 2, 2, 1], [1, 2, 2, 1], 'SAME')
+  # conv2
   second_filter_width = 4
   second_filter_height = 10
   second_filter_count = 64
@@ -291,6 +298,7 @@ def create_conv_model(fingerprint_input, model_settings, is_training):
     second_dropout = tf.nn.dropout(second_relu, dropout_prob)
   else:
     second_dropout = second_relu
+  # flatten
   second_conv_shape = second_dropout.get_shape()
   second_conv_output_width = second_conv_shape[2]
   second_conv_output_height = second_conv_shape[1]
@@ -299,6 +307,7 @@ def create_conv_model(fingerprint_input, model_settings, is_training):
       second_filter_count)
   flattened_second_conv = tf.reshape(second_dropout,
                                      [-1, second_conv_element_count])
+  # fc
   label_count = model_settings['label_count']
   final_fc_weights = tf.Variable(
       tf.truncated_normal(
@@ -1203,6 +1212,7 @@ def create_attention_model(fingerprint_input, model_settings, model_size_info,
   num_classes = model_settings['label_count']
   projection_units = model_size_info[0]
   LSTM_units = model_size_info[1]
+
   with tf.name_scope('LSTM-Layer'):
     with tf.variable_scope("lstm"): 
       lstmcell = tf.contrib.rnn.LSTMCell(LSTM_units, use_peepholes=True, 
@@ -1213,7 +1223,7 @@ def create_attention_model(fingerprint_input, model_settings, model_size_info,
       flow = outputs 
 
   attention_units = model_size_info[2]
-  with tf.name_scope('Attention'):
+  with tf.name_scope('Attention-Layer'):
       W_e = tf.get_variable('W_e', shape=[projection_units, attention_units],
              initializer=tf.contrib.layers.xavier_initializer()) 
       b_e = tf.get_variable('b_e', shape=[attention_units])
@@ -1231,6 +1241,138 @@ def create_attention_model(fingerprint_input, model_settings, model_size_info,
             initializer=tf.contrib.layers.xavier_initializer())
     b_o = tf.get_variable('b_o', shape=[num_classes])
     logits = tf.matmul(flow, W_o) + b_o
+
+  if is_training:
+    return logits, dropout_prob
+  else:
+    return logits
+
+def create_rmn_model(fingerprint_input, model_settings, model_size_info, 
+                        is_training):
+  """Builds a model with Residual Memory Neural Network Layer 
+  Based on model described in https://arxiv.org/abs/1808.01916v1
+  model_size_info: [first_fc_hidden_size, num_rmn_layers, 
+          rmn_bidirection, rmn_hidden_size, 
+          rmn_residual_step, last_fc_hidden_size]
+  """
+  if is_training:
+    dropout_prob = tf.placeholder(tf.float32, name='dropout_prob')
+  input_frequency_size = model_settings['dct_coefficient_count']
+  input_time_size = model_settings['spectrogram_length']
+  fingerprint_3d = tf.reshape(fingerprint_input,
+                              [-1, input_time_size, input_frequency_size])
+
+  num_classes = model_settings['label_count']
+
+  first_fc_hidden_size = model_size_info[0]
+  # RMN  start
+  num_layers = model_size_info[1]
+  hidden_units = model_size_info[2]
+  bidirection = model_size_info[3]
+  residual_step = model_size_info[4]
+  # RMN end
+  last_fc_hidden_size = model_size_info[5]
+
+  with tf.name_scope('FC1-layer'):
+      y = tf.layers.dense(fingerprint_3d, first_fc_hidden_size, use_bias=True)
+      y = tf.nn.relu(y)
+      if is_training:
+          y = tf.nn.dropout(y, keep_prob=dropout_prob)
+      y = tf.layers.dense(y, hidden_units, use_bias=True)
+      y = tf.nn.relu(y)
+      if is_training:
+          y = tf.nn.dropout(y, keep_prob=dropout_prob)
+      fc_out = y
+
+  layer_weights = [] 
+  shared_weight_fw = None
+  if bidirection:
+      shared_weight_bw = None
+  with tf.variable_scope('RMN-layer'):
+      shared_weight_fw = tf.get_variable('shared_weigt_fw', 
+          shape = [hidden_units, hidden_units],
+          initializer=tf.initializers.zeros())
+      if bidirection:
+          shared_weight_bw = tf.get_variable('shared_weigt_bw', 
+              shape = [hidden_units, hidden_units],
+               initializer=tf.initializers.zeros())
+      for l in range(num_layers): 
+          weight = tf.get_variable('layer{}_weight'.format(l),
+              shape=[hidden_units, hidden_units],
+              initializer=tf.initializers.variance_scaling(scale=0.1, 
+                  mode='fan_avg', distribution='normal'))
+          layer_weights.append(weight)
+
+  '''
+  M, L, T = num_layers, num_layers, input_time_size
+  all_hiddens = []
+  with tf.name_scope('RMN-layer'):
+     for t in range(T):
+          hidden_outs = []
+          x = fc_out[:, t, :] 
+          hidden_outs.append(x)
+          step = 0 # count for residual
+          for l in range(L):
+              step += 1
+              y = tf.matmul(x, layer_weights[l]) # feed forward 
+              m = max(0, t - M + l)
+              h = y[:, m, :]
+              y += tf.matmul(h, shared_weight_fw) # delay history
+              if bidirection:
+                  m = min(T, t + M - l)
+                  h = y[:, m, :]
+                  y += tf.matmul(h, shared_weight_bw) # delay future
+              y = tf.relu(y) # activation
+              if is_training:
+                  y = tf.nn.dropout(y, keep_prob=dropout_prob)
+              hidden_outs.append(y)
+              if step % residual_step == 0:   
+                  print('residual')
+                  y += hidden_outs[-step]
+              print(y.shape)
+              x = y
+          all_hiddens.append(hidden_outs)
+  '''
+
+  M, L, T = num_layers, num_layers, input_time_size
+  with tf.name_scope('RMN-layer'):
+    hidden_outs = []
+    x = fc_out 
+    hidden_outs.append(x)
+    step = 0 # count for residual
+    for l in range(L):
+      step += 1
+      # [B, T, D]
+      y = tf.tensordot(x, layer_weights[l], axes=[[-1], [0]]) # feed forward
+      m = max(0, T - l)
+      pad = tf.tile(y[:, :1, :], [1, m, 1])
+      fw = tf.concat([pad,  y[:, :-m, :]], axis=1)
+      y += tf.tensordot(fw, shared_weight_fw, axes=[[-1], [0]]) # delay history
+      if bidirection:
+         m = min(T, T-l)
+         bw = tf.concat([y[:, m:, :], tf.tile(y[:, -1:, :], [1, m, 1])], axis=1)
+         y += tf.tensordot(bw, shared_weight_bw, axes=[[-1], [0]]) # delay future
+      y = tf.nn.relu(y) # activation
+      if is_training:
+         y = tf.nn.dropout(y, keep_prob=dropout_prob) 
+      hidden_outs.append(y)
+      if step % residual_step == 0:
+         y += hidden_outs[-step]
+      x = y
+          
+  rmn_output = y 
+  with tf.name_scope('FC2-layer'):
+    y = tf.layers.dense(rmn_output, last_fc_hidden_size, use_bias=True)
+    flow = tf.nn.relu(y)
+    if is_training:
+      flow = tf.nn.dropout(flow, keep_prob=dropout_prob)
+
+  with tf.name_scope('Output-Layer'):
+    W_o = tf.get_variable('W_o', shape=[last_fc_hidden_size, num_classes], 
+            initializer=tf.contrib.layers.xavier_initializer())
+    b_o = tf.get_variable('b_o', shape=[num_classes])
+    logits = tf.tensordot(flow, W_o, axes=[[-1], [0]]) + b_o
+    logits = tf.reduce_sum(logits, 1)
 
   if is_training:
     return logits, dropout_prob

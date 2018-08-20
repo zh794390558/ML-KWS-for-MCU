@@ -349,6 +349,7 @@ class AudioProcessor(object):
     desired_samples = model_settings['desired_samples']
     self.wav_filename_placeholder_ = tf.placeholder(tf.string, [])
     wav_loader = io_ops.read_file(self.wav_filename_placeholder_)
+    # wav_decoder shape: [samples_per_seconds * length_in_seconds, channels]
     wav_decoder = contrib_audio.decode_wav(
         wav_loader, desired_channels=1, desired_samples=desired_samples)
     # Allow the audio sample's volume to be adjusted.
@@ -427,9 +428,9 @@ class AudioProcessor(object):
     else:
       sample_count = max(0, min(how_many, len(candidates) - offset))
     # Data and labels will be populated and returned.
-    data = np.zeros((sample_count, model_settings['fingerprint_size']))
-    labels = np.zeros((sample_count, model_settings['label_count']))
-    desired_samples = model_settings['desired_samples']
+    data = np.zeros((sample_count, model_settings['fingerprint_size'])) # (N, nframes*feat_dim)
+    labels = np.zeros((sample_count, model_settings['label_count'])) # (N,num_classes), one-hot encode
+    desired_samples = model_settings['desired_samples'] # audio clip samples
     use_background = self.background_data and (mode == 'training')
     pick_deterministically = (mode != 'training')
     # Use the processing graph we created earlier to repeatedly to generate the
