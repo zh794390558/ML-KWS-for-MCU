@@ -1303,37 +1303,6 @@ def create_rmn_model(fingerprint_input, model_settings, model_size_info,
                   mode='fan_avg', distribution='normal'))
           layer_weights.append(weight)
 
-  '''
-  M, L, T = num_layers, num_layers, input_time_size
-  all_hiddens = []
-  with tf.name_scope('RMN-layer'):
-     for t in range(T):
-          hidden_outs = []
-          x = fc_out[:, t, :] 
-          hidden_outs.append(x)
-          step = 0 # count for residual
-          for l in range(L):
-              step += 1
-              y = tf.matmul(x, layer_weights[l]) # feed forward 
-              m = max(0, t - M + l)
-              h = y[:, m, :]
-              y += tf.matmul(h, shared_weight_fw) # delay history
-              if bidirection:
-                  m = min(T, t + M - l)
-                  h = y[:, m, :]
-                  y += tf.matmul(h, shared_weight_bw) # delay future
-              y = tf.relu(y) # activation
-              if is_training:
-                  y = tf.nn.dropout(y, keep_prob=dropout_prob)
-              hidden_outs.append(y)
-              if step % residual_step == 0:   
-                  print('residual')
-                  y += hidden_outs[-step]
-              print(y.shape)
-              x = y
-          all_hiddens.append(hidden_outs)
-  '''
-
   M, L, T = num_layers, num_layers, input_time_size
   with tf.name_scope('RMN-layer'):
     hidden_outs = []
@@ -1344,12 +1313,11 @@ def create_rmn_model(fingerprint_input, model_settings, model_size_info,
       step += 1
       # [B, T, D]
       y = tf.tensordot(x, layer_weights[l], axes=[[-1], [0]]) # feed forward
-      m = max(0, T - l)
+      m = max(0, L - l)
       pad = tf.tile(y[:, :1, :], [1, m, 1])
       fw = tf.concat([pad,  y[:, :-m, :]], axis=1)
       y += tf.tensordot(fw, shared_weight_fw, axes=[[-1], [0]]) # delay history
       if bidirection:
-         m = min(T, T-l)
          bw = tf.concat([y[:, m:, :], tf.tile(y[:, -1:, :], [1, m, 1])], axis=1)
          y += tf.tensordot(bw, shared_weight_bw, axes=[[-1], [0]]) # delay future
       y = tf.nn.relu(y) # activation
