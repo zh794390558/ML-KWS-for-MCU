@@ -28,6 +28,7 @@ import os.path
 import sys
 
 import tensorflow as tf
+import numpy as np
 import input_data
 import models
 
@@ -87,6 +88,11 @@ def run_inference(wanted_words, sample_rate, clip_duration_ms,
       expected_indices, predicted_indices, num_classes=label_count)
   evaluation_step = tf.reduce_mean(tf.cast(correct_prediction, tf.float32))
   models.load_variables_from_checkpoint(sess, FLAGS.checkpoint)
+
+  # Parameter counts
+  params = tf.trainable_variables()
+  num_params = sum(map(lambda t: np.prod(tf.shape(t.value()).eval()), params))
+  print('Total number of Parameters: ', num_params)
 
   # training set
   set_size = audio_processor.set_size('training')
